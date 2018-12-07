@@ -1,57 +1,77 @@
-#ifndef	STATE_MACHINE_H_INCLUDED
-#define	STATE_MACHINE_H_INCLUDED
+#ifndef FSM_H_
+#define FSM_H_
 
-struct state_t;
+struct fsm_t;
+struct fsm_state_t;
+struct fsm_state_trans_t;
 
-typedef	int(*enter_func_t)(struct state_t* state,void* input);
-typedef	int(*exit_func_t)(struct state_t* state,void* input);
-typedef	int(*event_handler_t)(void* input);
+typedef int(*trig_func_t)(struct fsm_state_trans_t*);
+typedef void(*enter_func_t)(struct fsm_state_trans_t*);
+typedef void(*idle_func_t)(struct fsm_state_t*);
+typedef void(*leave_func_t)(struct fsm_state_trans_t*);
 
-typedef	struct event_t {
-	char* name;
-	event_handler_t happend;
-} event_t;
+#ifdef __cplusplus
 
-typedef	struct basic_state_t {
+#define fsm_lambda(return_type, function_body) []function_body
 
-} basic_state_t;
+#else
 
-typedef	struct state_t {
-	struct state_t* prev;
-	struct state_t* _next;
-	struct transition_t* trans;
-	struct state_machine_t* owner;
-	enter_func_t entered;
-	exit_func_t exited;
-} state_t;
+#ifndef fsm_lambda
+#define fsm_lambda(return_type, function_body) ({ \
+      return_type fsm_lambda__fn__cb function_body \
+      fsm_lambda__fn__cb; \
+})
+#endif
 
-typedef	struct history_state_t {
-	
-} history_state_t;
+#endif
 
-typedef	struct final_state_t {
-	
-} final_state_t;
+struct fsm_state_t {
+    char name[256];
+    int is_final;
+    struct fsm_t* fsm;
+    struct fsm_state_trans_t* trans;
+    struct fsm_state_t* next;
+    enter_func_t enter;
+    idle_func_t idle;
+    leave_func_t leave;
+    void* priv_data;
+};
 
-typedef	struct transition_t {
-	struct event_t event;
-	struct state_t* next_state;
-	struct transition_t* _next;
-} transition_t;
+struct fsm_state_trans_t {
+    int prio;
+    trig_func_t trig;
+    struct fsm_state_t* source;
+    struct fsm_state_t* target;
+    struct fsm_state_trans_t* next;
+    void* priv_data;
+};
 
-typedef	struct state_machine_t {
-	int isrunning;
-	struct state_t* cur_state;
-	struct state_t* state_lst;
-	enter_func_t default_entered;
-	exit_func_t default_exited;
-} state_machine_t;
+struct fsm_t {
+    int running;
+    struct fsm_state_t* start_state;
+    struct fsm_state_t* final_state;
+    struct fsm_state_t* curr_state;
+    struct fsm_state_t* states;
+};
 
-int fsm_init(struct state_machine_t** fsm);
-int fsm_start(struct state_machine_t* fsm,void* input);
-int fsm_add_state(struct state_machine_t* fsm,struct state_t* state);
-int fsm_add_transition(struct state_t* src,struct state_t* dst,struct transition_t* trans);
-int fsm_stat_remove(struct state_machine_t* fsm,struct state_t* state);
-int fsm_release(struct state_machine_t** fsm);
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+extern int fsm_create(struct fsm_t** fsm);
+extern void fsm_destroy(struct fsm_t* fsm);
+
+extern int fsm_run_once(struct fsm_t* fsm);
+extern int fsm_set_start_state(struct fsm_t*, struct fsm_state_t* state);
+extern int fsm_set_final_state(struct fsm_t*, struct fsm_state_t* state);
+
+extern struct fsm_state_t*  fsm_add_state(struct fsm_t* fsm, const char*name, enter_func_t enter,
+                                          leave_func_t leave, void* userdata);
+
+extern int fsm_add_trans(struct fsm_state_t* source, struct fsm_state_t* target,
+                         int prio, trig_func_t trig, void* userdata);
+#ifdef __cplusplus
+}
+#endif
 
 #endif

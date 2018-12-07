@@ -1,11 +1,11 @@
 CC=gcc
-OBJS=test.o \
-	 state-machine.o
-TARGETS=test
-CFLAGS= -g -Wall
 
-all:$(OBJS)
-	$(CC) $(OBJS) -o $(TARGETS) $(CFLAGS)
+all:
+	$(CC) fsm.c -std=gnu11 -shared -o libfsm.so -I./ -Wall -Werror
 
-clean:
-	-rm $(OBJS) $(TARGETS)
+install:
+	mkdir -p /usr/local/include/fsm/
+	mkdir -p /usr/local/lib/fsm/
+	cp fsm.h /usr/local/include/fsm/
+	cp libfsm.so /usr/local/lib/fsm/
+

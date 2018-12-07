@@ -1,190 +1,210 @@
-#include "state-machine.h"
-#include "debug.h"
+﻿#include <fsm.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <errno.h>
+#include <sys/queue.h>
 
-static int default_entered_cb(struct state_t*state,void* input)
+
+static struct fsm_state_t* fsm_new_state(const char* name)
 {
-	return 0;
-}
-static int default_exited_cb(struct state_t*state,void* input)
-{
-	DEBUG_MSG("default exited\n");
-	return 0;
-}
+    struct fsm_state_t* p;
 
-int fsm_init(struct state_machine_t** fsm)
-{
-	if( !fsm ){
-		ERR_MSG("invalid argument\n");
-		return -1;
-	}
+    p = calloc(1, sizeof(struct fsm_state_t));
+    if( !p ){
+        return NULL;
+    }
+    if( name ){
+        strncpy(p->name, name, sizeof(p->name) - 1);
+    }
 
-	*fsm = (struct state_machine_t*)calloc(1,sizeof(struct state_machine_t));
-	if( *fsm == NULL ){
-		STD_ERR_MSG("Cant allocate memory");
-		return -1;
-	}
-	
-	(*fsm)->default_entered = default_entered_cb;
-	(*fsm)->default_exited = default_exited_cb;
-
-	return 0;
+    return p;
 }
 
-static int exit_state(struct state_t* state,void* input)
+static struct fsm_state_trans_t* fsm_new_trans()
 {
-	int ret;
-	
-	if( !state->exited ){
-		ret = state->owner->default_exited(state,input);
-	}else{
-		ret = state->exited(state,input);
-	}
-	
-	return ret;
+    struct fsm_state_trans_t* p;
+
+    p = calloc(1, sizeof(struct fsm_state_trans_t));
+    if( !p ){
+        return NULL;
+    }
+
+    return p;
 }
 
-static int enter_state(struct state_t* state,void* input)
+int fsm_run_once(struct fsm_t* fsm)
 {
-	int ret;
-	
-	if( !state->entered ){
-		ret = state->owner->default_entered(state,input);
-	}else{
-		ret = state->entered(state,input);
-	}
-	return ret;
+    struct fsm_state_trans_t* p;
+
+    if( !fsm ){
+        return -EINVAL;
+    }
+
+    p = fsm->curr_state->trans;
+    while( p ){
+        if( p->trig(p) ){
+            if( p->source->leave ){
+                p->source->leave(p);
+            }
+            fsm->curr_state = p->target;
+            if( p->target->enter ){
+                p->target->enter(p);
+                if( p->target->is_final ){
+                    fsm->running = 0;
+                }
+            }
+            break;
+        }
+        p = p->next;
+    }
+
+    if( fsm->curr_state->idle ){
+        p->source->idle(fsm->curr_state);
+    }
+
+    return 0;
 }
 
-static int do_transition(struct state_t* state,void* input)
+int fsm_set_start_state(struct fsm_t* fsm, struct fsm_state_t* state)
 {
-	struct transition_t* p;
-	p = state->trans;
-	while( p ){
-		if( p->event.happend(input) ){
-			state->owner->cur_state = p->next_state;
-			state->prev = state;
-			DEBUG_MSG("will transition to another state\n");
-			return 0;
-		}
-		p = p->_next;
-	}
-	ERR_MSG("no target to transition to\n");
-	return -1;
+    if( !fsm || !state ){
+        return -EINVAL;
+    }
+
+    fsm->start_state = state;
+    fsm->curr_state = state;
+
+    return 0;
 }
 
-static int to_state(struct state_t* state,void* input)
+int fsm_set_final_state(struct fsm_t* fsm, struct fsm_state_t* state)
 {
-	int ret;
-	do{
-		ret=enter_state(state,input);
-	}while( state->owner->isrunning && do_transition(state,input) < 0 );
+    if( !fsm || !state ){
+        return -EINVAL;
+    }
 
-	return exit_state(state,input);
+    state->is_final = 1;
+    fsm->final_state = state;
+
+    return 0;
 }
 
-int fsm_start(struct state_machine_t* fsm,void* input)
+int fsm_add_trans(struct fsm_state_t* source, struct fsm_state_t* target,
+                  int prio, trig_func_t trig, void* userdata)
 {
-	if( fsm->isrunning ){
-		ERR_MSG("this state machine has been running");
-		return -1;
-	}else if( fsm->cur_state == NULL ){
-		ERR_MSG("need start state");
-		return -1;
-	}
-	
-	fsm->isrunning = 1;
-	while( fsm->isrunning ){
-		to_state(fsm->cur_state,input);
-	}
+    struct fsm_state_trans_t* trans;
+    struct fsm_state_trans_t* ptr;
+    struct fsm_state_trans_t* prev;
 
-	return 0;
+    if( !source || !target || !trig ){
+        return -EINVAL;
+    }
+
+    trans = fsm_new_trans();
+    if( !trans ){
+        return -ENOMEM;
+    }
+    trans->source   = source;
+    trans->target   = target;
+    trans->prio     = prio;
+    trans->trig     = trig;
+    trans->priv_data= userdata;
+    trans->next     = NULL;
+
+    if( source->trans == NULL ){
+        source->trans = trans;
+        return 0;
+    }
+
+    ptr = source->trans;
+    if( ptr->prio > trans->prio ){
+        trans->next = ptr;
+        source->trans = trans;
+        return 0;
+    }
+
+    prev = source->trans;
+    ptr  = source->trans->next;
+
+    while( ptr ){
+        if( ptr->prio > trans->prio ){
+            break;
+        }else{
+            ptr = ptr->next;
+            prev = prev->next;
+        }
+    }
+    trans->next = ptr;
+    prev->next = trans;
+
+    return 0;
 }
 
-int fsm_add_state(struct state_machine_t* fsm,struct state_t* state)
+struct fsm_state_t* fsm_add_state(struct fsm_t* fsm, const char* name, enter_func_t enter,
+                                  leave_func_t leave, void* userdata)
 {
-	struct state_t* p = fsm->state_lst;
-	
-	if( !fsm || !state ){
-		ERR_MSG("invalid argument\n");
-		return -1;
-	}
-	if( state->owner && state->owner != fsm ){
-		ERR_MSG("this state belongs to another state machine\n");
-		return -1;
-	}
-	state->owner = fsm;
+    struct fsm_state_t* state;
 
-	if( !p ){
-		fsm->state_lst = state;
-		return 0;
-	}else if( p && p == state ){
-		ERR_MSG("this state has been added to the state machine\n");
-		return -1;
-	}
+    if( !fsm ){
+        errno = EINVAL;
+        return NULL;
+    }
 
-	while( p->_next && p->_next != state ){
-		p = p->_next;
-	}
-	
-	if( p->_next ){
-		ERR_MSG("this state has been added to the state machine\n");
-		return -1;
-	}
-	p->_next = state;
+    state = fsm_new_state(name);
+    if( state == NULL ){
+        return NULL;
+    }
 
-	return 0;
+    state->fsm      = fsm;
+    state->enter    = enter;
+    state->leave    = leave;
+    state->priv_data= userdata;
+
+    state->next = fsm->states;
+    fsm->states = state;
+
+    return state;
 }
 
-int fsm_add_transition(struct state_t* src,struct state_t* dst,struct transition_t* trans)
+int fsm_create(struct fsm_t **fsm)
 {
-	struct transition_t* p;
+    if( !fsm ){
+        return -EINVAL;
+    }
 
-	if( !src || !dst || !trans ){
-		ERR_MSG("invalid argument\n");
-		return -1;
-	}
+    *fsm = calloc(1, sizeof(struct fsm_t));
+    if( !(*fsm) ){
+        return -errno;
+    }
 
-	p = src->trans;
-	while( p ){
-		if( p == trans ){
-			break;
-		}
-		p = p->_next;
-	}
-
-	if( p ){
-		ERR_MSG("this transition is already existed\n");
-		return -1;
-	}
-	
-	trans->_next = src->trans;
-	src->trans = trans;
-	trans->next_state = dst;
-
-	return 0;
+    return 0;
 }
 
-int fsm_stat_remove(struct state_machine_t* fsm,struct state_t* state)
+void fsm_destroy(struct fsm_t *fsm)
 {
+    struct fsm_state_t* pstate;
+    struct fsm_state_t* pstate_tmp;
+    struct fsm_state_trans_t* ptrans;
+    struct fsm_state_trans_t* ptrans_tmp;
 
-	return 0;
+    fsm->running = 0;
+    fsm->curr_state = NULL;
+    fsm->final_state = NULL;
+
+    pstate = fsm->states;
+    fsm->states = NULL;
+
+    while( pstate ){
+        ptrans = pstate->trans;
+        pstate->trans = NULL;
+        while (ptrans) {
+            ptrans_tmp = ptrans->next;
+            free(ptrans);
+            ptrans = ptrans_tmp;
+        }
+        pstate_tmp = pstate->next;
+        free(pstate);
+        pstate = pstate_tmp;
+    }
 }
-
-int fsm_release(struct state_machine_t** fsm)
-{
-	if( !fsm || !(*fsm) ){
-		return 0;
-	}
-
-	if( (*fsm)->isrunning ){
-		ERR_MSG("the state machine is still running\n");
-		return -1;
-	}
-
-	free(*fsm);
-	*fsm = NULL;
-
-	return 0;
-}
-
